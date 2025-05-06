@@ -1,9 +1,9 @@
-// app.js - Main application file
 const express = require("express");
 const cors = require("cors");
 const sqlite3 = require("sqlite3").verbose();
 const { open } = require("sqlite");
 const path = require("path");
+const crypto = require("crypto");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -16,20 +16,49 @@ app.use(express.static(path.join(__dirname, "public")));
 // Database setup
 let db;
 
+// Debug middleware for logging requests
+app.use((req, res, next) => {
+  console.log(
+    `[${new Date().toISOString()}] ${req.method} ${req.path}`,
+    req.body
+  );
+  next();
+});
+
+// Fix the database initialization in app.js
 async function initializeDatabase() {
+  console.log("Opening database connection...");
   db = await open({
     filename: path.join(__dirname, "database.sqlite"),
     driver: sqlite3.Database,
   });
+
+  console.log("Creating tables if they don't exist...");
+
+  // Enable foreign keys
+  await db.exec("PRAGMA foreign_keys = ON;");
+  console.log("Foreign keys enabled");
+
+  // Update the scanned_items table schema to include all required columns
   await db.exec(`
     CREATE TABLE IF NOT EXISTS scanned_items (
       id TEXT PRIMARY KEY,
       barcode TEXT NOT NULL,
       folder_id TEXT,
+      name TEXT,
+      brand TEXT,
+      calories INTEGER,
+      protein TEXT,
+      carbs TEXT,
+      fats TEXT,
+      quantity TEXT,
+      image TEXT,
       scanned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(folder_id) REFERENCES folders(id)
     )
   `);
+  console.log("scanned_items table created/verified");
+
   await db.exec(`
     CREATE TABLE IF NOT EXISTS folders (
       id TEXT PRIMARY KEY,
@@ -38,6 +67,8 @@ async function initializeDatabase() {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  console.log("folders table created/verified");
+
   // Create products table
   await db.exec(`
     CREATE TABLE IF NOT EXISTS products (
@@ -52,15 +83,15 @@ async function initializeDatabase() {
       image TEXT
     )
   `);
+  console.log("products table created/verified");
 
   // Insert sample data if database is empty
   const count = await db.get("SELECT COUNT(*) as count FROM products");
   if (count.count === 0) {
+    console.log("Inserting sample products...");
     await db.run(
-      `
-      INSERT INTO products (barcode, name, brand, calories, protein, carbs, fats, quantity, image)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
+      `INSERT INTO products (barcode, name, brand, calories, protein, carbs, fats, quantity, image)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         "8901234567890",
         "Organic Greek Yogurt",
@@ -75,10 +106,8 @@ async function initializeDatabase() {
     );
 
     await db.run(
-      `
-      INSERT INTO products (barcode, name, brand, calories, protein, carbs, fats, quantity, image)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
+      `INSERT INTO products (barcode, name, brand, calories, protein, carbs, fats, quantity, image)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         "7654321098765",
         "Crunchy Peanut Butter",
@@ -94,6 +123,17 @@ async function initializeDatabase() {
 
     console.log("Sample products inserted into database");
   }
+
+  // Debug: Let's see what's in each table
+  console.log("Current database state:");
+  const products = await db.all("SELECT * FROM products");
+  console.log("Products:", products);
+
+  const folders = await db.all("SELECT * FROM folders");
+  console.log("Folders:", folders);
+
+  const items = await db.all("SELECT * FROM scanned_items");
+  console.log("Scanned Items:", items);
 
   console.log("Database initialized successfully");
 }
@@ -231,8 +271,269 @@ initializeDatabase()
       }
     });
 
-    // User authentication routes would go here
-    // ...
+    // Folder routes
+    app.get("/api/folders", async (req, res) => {
+      try {
+        const folders = await db.all(
+          "SELECT * FROM folders ORDER BY created_at DESC"
+        );
+        console.log("GET /api/folders response:", folders);
+        res.json(folders);
+      } catch (error) {
+        console.error("Error fetching folders:", error);
+        res.status(500).json({ error: "Failed to retrieve folders" });
+      }
+    });
+
+    app.post("/api/folders", async (req, res) => {
+      try {
+        const { name } = req.body;
+        if (!name) {
+          return res.status(400).json({ error: "Folder name is required" });
+        }
+
+        const id = crypto.randomUUID();
+        console.log(`Creating new folder with id ${id} and name "${name}"`);
+
+        await db.run("INSERT INTO folders (id, name) VALUES (?, ?)", [
+          id,
+          name,
+        ]);
+        console.log("Folder inserted into database");
+
+        const newFolder = await db.get(
+          "SELECT * FROM folders WHERE id = ?",
+          id
+        );
+        console.log("New folder:", newFolder);
+
+        res.status(201).json(newFolder);
+      } catch (error) {
+        console.error("Error creating folder:", error);
+        res.status(500).json({ error: "Failed to create folder" });
+      }
+    });
+
+    app.get("/api/folders/:id", async (req, res) => {
+      try {
+        const folder = await db.get(
+          "SELECT * FROM folders WHERE id = ?",
+          req.params.id
+        );
+        if (folder) {
+          res.json(folder);
+        } else {
+          console.log(`Folder with id ${req.params.id} not found`);
+          res.status(404).json({ error: "Folder not found" });
+        }
+      } catch (error) {
+        console.error("Error fetching folder:", error);
+        res.status(500).json({ error: "Failed to retrieve folder" });
+      }
+    });
+
+    app.put("/api/folders/:id", async (req, res) => {
+      try {
+        const { name } = req.body;
+        const { id } = req.params;
+
+        if (!name) {
+          return res.status(400).json({ error: "Folder name is required" });
+        }
+
+        await db.run(
+          "UPDATE folders SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+          [name, id]
+        );
+
+        const updatedFolder = await db.get(
+          "SELECT * FROM folders WHERE id = ?",
+          id
+        );
+        if (updatedFolder) {
+          res.json(updatedFolder);
+        } else {
+          res.status(404).json({ error: "Folder not found" });
+        }
+      } catch (error) {
+        console.error("Error updating folder:", error);
+        res.status(500).json({ error: "Failed to update folder" });
+      }
+    });
+
+    app.delete("/api/folders/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+
+        await db.run("DELETE FROM folders WHERE id = ?", id);
+
+        res.status(204).send();
+      } catch (error) {
+        console.error("Error deleting folder:", error);
+        res.status(500).json({ error: "Failed to delete folder" });
+      }
+    });
+
+    // Get items in a folder
+    app.get("/api/folders/:id/items", async (req, res) => {
+      try {
+        const items = await db.all(
+          `SELECT 
+        id,
+        barcode,
+        folder_id AS folderId,
+        name,
+        brand,
+        calories,
+        protein,
+        carbs,
+        fats,
+        quantity,
+        image,
+        scanned_at AS timestamp
+       FROM scanned_items 
+       WHERE folder_id = ?
+       ORDER BY scanned_at DESC`,
+          req.params.id
+        );
+        res.json(items);
+      } catch (error) {
+        console.error("Error:", error);
+        res.status(500).json({ error: "Failed to fetch items" });
+      }
+    });
+    // Create (scan) a new item in a folder
+    app.post("/api/folders/:id/items", async (req, res) => {
+      try {
+        const folderId = req.params.id;
+        const { id, barcode } = req.body;
+        const stringId = String(id);
+        console.log(
+          `Saving scanned item with id ${stringId}, barcode ${barcode} to folder ${folderId}`
+        );
+
+        if (!stringId || !barcode) {
+          console.error("Missing required fields:", { id, barcode });
+          return res.status(400).json({ error: "ID and barcode are required" });
+        }
+
+        // Verify folder exists
+        const folder = await db.get(
+          "SELECT * FROM folders WHERE id = ?",
+          folderId
+        );
+        if (!folder) {
+          console.error(`Folder with id ${folderId} not found`);
+          return res.status(404).json({ error: "Folder not found" });
+        }
+        console.log("Folder found:", folder);
+
+        // Get product information
+        const product = await db.get(
+          `SELECT * FROM products WHERE barcode = ?`,
+          [barcode]
+        );
+        console.log("Product found:", product);
+
+        console.log("Inserting into scanned_items table with values:", {
+          stringId,
+          barcode,
+          folderId,
+          name: product?.name || "Unknown Product",
+          brand: product?.brand || "Unknown",
+          calories: product?.calories || 0,
+          protein: product?.protein || "0g",
+          carbs: product?.carbs || "0g",
+          fats: product?.fats || "0g",
+          quantity: product?.quantity || "Unknown",
+          image: product?.image || "/api/placeholder/80/80",
+        });
+
+        // Insert into scanned_items with product information
+        const result = await db.run(
+          `INSERT INTO scanned_items 
+           (id, barcode, folder_id, name, brand, calories, protein, carbs, fats, quantity, image)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            id,
+            barcode,
+            folderId,
+            product?.name || "Unknown Product",
+            product?.brand || "Unknown",
+            product?.calories || 0,
+            product?.protein || "0g",
+            product?.carbs || "0g",
+            product?.fats || "0g",
+            product?.quantity || "Unknown",
+            product?.image || "/api/placeholder/80/80",
+          ]
+        );
+        console.log("Insert result:", result);
+
+        // Return the newly-inserted row with all product information
+        const newItem = await db.get(
+          `SELECT 
+             id,
+             barcode,
+             folder_id AS folderId,
+             name,
+             brand,
+             calories,
+             protein,
+             carbs,
+             fats,
+             quantity,
+             image,
+             scanned_at AS timestamp
+           FROM scanned_items
+           WHERE id = ?`,
+          [id]
+        );
+        console.log("New item inserted:", newItem);
+
+        // Verify total items in the folder after insertion
+        const allItems = await db.all(
+          "SELECT * FROM scanned_items WHERE folder_id = ?",
+          folderId
+        );
+        console.log(
+          `Total items in folder after insertion: ${allItems.length}`
+        );
+
+        res.status(201).json(newItem);
+      } catch (error) {
+        console.error("Error creating scanned item:", error);
+        console.error("Stack trace:", error.stack);
+        res.status(500).json({ error: "Failed to save scanned item" });
+      }
+    });
+
+    // Debug endpoint to check database status
+    app.get("/api/debug/status", async (req, res) => {
+      try {
+        const tables = await db.all(
+          "SELECT name FROM sqlite_master WHERE type='table'"
+        );
+
+        const dbStatus = {
+          tables: tables.map((t) => t.name),
+          counts: {},
+        };
+
+        for (const table of tables) {
+          if (table.name.startsWith("sqlite_")) continue;
+          const count = await db.get(
+            `SELECT COUNT(*) as count FROM ${table.name}`
+          );
+          dbStatus.counts[table.name] = count.count;
+        }
+
+        res.json(dbStatus);
+      } catch (error) {
+        console.error("Error fetching debug status:", error);
+        res.status(500).json({ error: "Failed to get debug status" });
+      }
+    });
 
     // Start server
     app.listen(PORT, () => {
@@ -243,142 +544,3 @@ initializeDatabase()
     console.error("Failed to initialize database:", err);
     process.exit(1);
   });
-app.get("/api/folders", async (req, res) => {
-  try {
-    const folders = await db.all(
-      "SELECT * FROM folders ORDER BY created_at DESC"
-    );
-    res.json(folders);
-  } catch (error) {
-    console.error("Error fetching folders:", error);
-    res.status(500).json({ error: "Failed to retrieve folders" });
-  }
-});
-
-app.get("/api/folders/:id", async (req, res) => {
-  try {
-    const folder = await db.get(
-      "SELECT * FROM folders WHERE id = ?",
-      req.params.id
-    );
-    if (folder) {
-      res.json(folder);
-    } else {
-      res.status(404).json({ error: "Folder not found" });
-    }
-  } catch (error) {
-    console.error("Error fetching folder:", error);
-    res.status(500).json({ error: "Failed to retrieve folder" });
-  }
-});
-
-app.post("/api/folders", async (req, res) => {
-  try {
-    const { name } = req.body;
-    if (!name) {
-      return res.status(400).json({ error: "Folder name is required" });
-    }
-
-    const id = crypto.randomUUID();
-    await db.run("INSERT INTO folders (id, name) VALUES (?, ?)", [id, name]);
-
-    const newFolder = await db.get("SELECT * FROM folders WHERE id = ?", id);
-    res.status(201).json(newFolder);
-  } catch (error) {
-    console.error("Error creating folder:", error);
-    res.status(500).json({ error: "Failed to create folder" });
-  }
-});
-
-app.put("/api/folders/:id", async (req, res) => {
-  try {
-    const { name } = req.body;
-    const { id } = req.params;
-
-    if (!name) {
-      return res.status(400).json({ error: "Folder name is required" });
-    }
-
-    await db.run(
-      "UPDATE folders SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      [name, id]
-    );
-
-    const updatedFolder = await db.get(
-      "SELECT * FROM folders WHERE id = ?",
-      id
-    );
-    if (updatedFolder) {
-      res.json(updatedFolder);
-    } else {
-      res.status(404).json({ error: "Folder not found" });
-    }
-  } catch (error) {
-    console.error("Error updating folder:", error);
-    res.status(500).json({ error: "Failed to update folder" });
-  }
-});
-
-app.delete("/api/folders/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    await db.run("DELETE FROM folders WHERE id = ?", id);
-
-    res.status(204).send();
-  } catch (error) {
-    console.error("Error deleting folder:", error);
-    res.status(500).json({ error: "Failed to delete folder" });
-  }
-});
-
-// Get items in a folder
-app.get("/api/folders/:id/items", async (req, res) => {
-  try {
-    const items = await db.all(
-      `
-        SELECT * FROM scanned_items 
-        WHERE folder_id = ?
-        ORDER BY scanned_at DESC
-      `,
-      req.params.id
-    );
-
-    res.json(items);
-  } catch (error) {
-    console.error("Error fetching folder items:", error);
-    res.status(500).json({ error: "Failed to retrieve folder items" });
-  }
-});
-
-// Create (scan) a new item in a folder
-app.post("/api/folders/:id/items", async (req, res) => {
-  try {
-    const folderId = req.params.id;
-    const { id, barcode } = req.body;
-
-    // Insert into scanned_items; scanned_at will default to CURRENT_TIMESTAMP
-    await db.run(
-      `INSERT INTO scanned_items (id, barcode, folder_id)
-       VALUES (?, ?, ?)`,
-      [id, barcode, folderId]
-    );
-
-    // Return the newly‐inserted row
-    const newItem = await db.get(
-      `SELECT 
-         id,
-         barcode,
-         folder_id AS folderId,
-         scanned_at AS timestamp
-       FROM scanned_items
-       WHERE id = ?`,
-      [id]
-    );
-
-    res.status(201).json(newItem);
-  } catch (error) {
-    console.error("Error creating scanned item:", error);
-    res.status(500).json({ error: "Failed to save scanned item" });
-  }
-});
