@@ -4,6 +4,7 @@ const sqlite3 = require("sqlite3").verbose();
 const { open } = require("sqlite");
 const path = require("path");
 const crypto = require("crypto");
+const clients = new Set();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -12,6 +13,23 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static(path.join(__dirname, "public")));
+app.use((req, res, next) => {
+  /* logging… */ next();
+});
+
+// ─── SSE ENDPOINT ───
+app.get("/api/scan-stream", (req, res) => {
+  res.set({
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  res.flushHeaders();
+
+  clients.add(res);
+  req.on("close", () => clients.delete(res));
+});
 
 // Database setup
 let db;
@@ -535,9 +553,122 @@ initializeDatabase()
       }
     });
 
+    // Replace your current non-DB /api/scan with this:
+    let lastScannedBarcode = null;
+
+    app.post("/api/scan", async (req, res) => {
+      const { barcode } = req.body;
+
+      if (!barcode) {
+        return res.status(400).json({ error: "Barcode is required" });
+      }
+
+      try {
+        const product = await db.get(
+          "SELECT * FROM products WHERE barcode = ?",
+          [barcode]
+        );
+
+        if (!product) {
+          return res.status(404).json({
+            error: "Product not found",
+            barcode,
+          });
+        }
+
+        // ✅ Save barcode to global variable
+        lastScannedBarcode = barcode;
+        for (const clientRes of clients) {
+          clientRes.write(`data: ${JSON.stringify({ barcode })}\n\n`);
+        }
+        res.json({
+          message: "Barcode valid",
+          product,
+        });
+
+        await db.run(
+          `INSERT INTO scanned_items
+       (id, barcode, folder_id, name, brand, calories, protein, carbs, fats, quantity, image)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            crypto.randomUUID(),
+            barcode,
+            null,
+            product.name,
+            product.brand,
+            product.calories,
+            product.protein,
+            product.carbs,
+            product.fats,
+            product.quantity,
+            product.image,
+          ]
+        );
+      } catch (err) {
+        console.error("Error in /api/scan:", err);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
+    app.get("/api/sendscannedbarcode", (req, res) => {
+      if (!lastScannedBarcode) {
+        return res.status(404).json({ error: "No scanned barcode found" });
+      }
+
+      res.status(200).json({ barcode: lastScannedBarcode });
+      lastScannedBarcode = null;
+    });
+
+    // In your app.js, right alongside your other routes:
+
+    /**
+     * GET /api/scan/:barcode
+     *
+     * Lookup a product by barcode and return its info as JSON.
+     * Frontend can then take that JSON and call addScannedItem(...) to
+     * persist it into the active folder.
+     */
+    app.get("/api/scan/:barcode", async (req, res) => {
+      const { barcode } = req.params;
+
+      if (!barcode) {
+        return res.status(400).json({ error: "Barcode is required" });
+      }
+
+      try {
+        // 1. Fetch product details
+        const product = await db.get(
+          "SELECT * FROM products WHERE barcode = ?",
+          barcode
+        );
+
+        if (!product) {
+          return res.status(404).json({ error: "Product not found" });
+        }
+
+        // 2. Send back exactly what the client needs
+        res.json({
+          message: "Barcode valid",
+          product: {
+            barcode: product.barcode,
+            name: product.name,
+            brand: product.brand,
+            calories: product.calories,
+            protein: product.protein,
+            carbs: product.carbs,
+            fats: product.fats,
+            quantity: product.quantity,
+            image: product.image,
+          },
+        });
+      } catch (err) {
+        console.error("Error in GET /api/scan/:barcode:", err);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
+
     // Start server
-    app.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on 0.0.0.0:${PORT}`);
     });
   })
   .catch((err) => {
