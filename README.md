@@ -70,11 +70,34 @@ SmartCartForHealthCare-Backend-/
 
 The backend provides various RESTful endpoints for cart management. Detailed API documentation will be added here.
 
+### Testing the API
+
+You can test the API endpoints using either Postman or cURL:
+
+#### Using Postman
+1. Open Postman
+2. Create a new request
+3. Use the following endpoint (replace with your server's IP address):
+   ```
+   http://<your-server-ip>:3000/api/scan
+   ```
+   Example: `http://192.168.41.79:3000/api/scan`
+
+#### Using cURL
+You can test the endpoints using cURL from your command line:
+```bash
+curl -X GET http://<your-server-ip>:3000/api/scan
+```
+Example:
+```bash
+curl -X GET http://192.168.41.79:3000/api/scan
+```
+
 ## 🔐 Security
 
 - CORS is enabled for cross-origin requests
 - SQLite database for secure data storage
-- WebSocket connections are handled securely
+
 
 ## 🤝 Contributing
 
@@ -92,3 +115,6 @@ This project is licensed under the ISC License.
 
 - Arham Mehmood
 
+## 🙏 Acknowledgments
+
+- Thanks to all contributors who have helped shape this project 
